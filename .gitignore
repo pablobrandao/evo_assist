@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.env
+*.env.local
+bkp/
+src/config/tenants.local.json
+v2_data/
+!v2_data/*.example.json
+webhook_logs.txt
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+npm-debug.log*
+
+# Evolution API data
+instances/
+store/

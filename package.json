@@ -1,0 +1,39 @@
+{
+  "name": "comercial-assistent",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "ts-node --project tsconfig.dev.json src/main.ts",
+    "dev:v2": "ts-node --project tsconfig.dev.json src/v2_main.ts",
+    "dev:all": "powershell -NoProfile -Command \"Start-Process -FilePath 'npm.cmd' -ArgumentList 'run','dev:v2' -WorkingDirectory '.'; npm run dev\"",
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "start:v2": "node dist/v2_main.js",
+    "test:ingest": "ts-node --project tsconfig.dev.json scripts/test-ingest.ts",
+    "test:rag": "ts-node --project tsconfig.dev.json scripts/test-rag.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "imapflow": "^1.2.18",
+    "mammoth": "^1.12.0",
+    "node-cron": "^4.2.1",
+    "pdf-parse": "^1.1.1",
+    "pg": "^8.13.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.5.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/pg": "^8.11.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.2"
+  }
+}

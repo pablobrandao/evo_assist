@@ -1,0 +1,18 @@
+{
+  "tenants": [
+    {
+      "tenant_id": "rep_exemplo",
+      "name": "Empresa Exemplo - Suporte Comercial",
+      "whatsapp_instance": "MinhaInstancia",
+      "imap": {
+        "host": "imap.seuprovedor.com",
+        "port": 993,
+        "secure": true,
+        "auth": {
+          "user": "suporte@empresa.com.br",
+          "pass": "SENHA_AQUI"
+        }
+      }
+    }
+  ]
+}

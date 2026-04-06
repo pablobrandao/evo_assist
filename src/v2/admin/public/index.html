@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AGC Assistant - Admin Premium</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+    <div class="glass-bg"></div>
+    
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="sidebar-top">
+                <div class="logo">
+                    <div class="logo-icon"></div>
+                    <h1>AGC <span>Admin</span></h1>
+                </div>
+                <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Recolher menu lateral" title="Recolher menu lateral">
+                    <i data-lucide="panel-left-close"></i>
+                </button>
+            </div>
+            <nav>
+                <a href="#" class="active" data-view="dashboard" data-tooltip="Dashboard"><i data-lucide="layout-dashboard"></i> Dashboard</a>
+                <a href="#" data-view="representatives" data-tooltip="Representantes"><i data-lucide="users"></i> Representantes</a>
+                <a href="#" data-view="logs" data-tooltip="Logs de Chat"><i data-lucide="message-square"></i> Logs de Chat</a>
+                <a href="#" data-view="explorer" data-tooltip="Explorer"><i data-lucide="folder-open"></i> Explorer</a>
+                <a href="#" data-view="analytics" data-tooltip="Analytics"><i data-lucide="bar-chart-3"></i> Analytics</a>
+                <a href="#" data-view="settings" data-tooltip="Configurações"><i data-lucide="settings"></i> Configurações</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <header>
+                <div class="search-bar">
+                    <i data-lucide="search"></i>
+                    <input type="text" placeholder="Pesquisar logs ou usuários...">
+                </div>
+                <div class="user-profile">
+                    <div class="status-indicator online"></div>
+                    <span>Pablo Brandão</span>
+                    <img src="https://ui-avatars.com/api/?name=PB&background=EF4444&color=fff" alt="Avatar">
+                </div>
+            </header>
+
+            <section class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>Total de Perguntas</h3>
+                        <p id="total-questions">0</p>
+                        <span class="trend positive">+12% vs ontem</span>
+                    </div>
+                    <div class="stat-icon red"><i data-lucide="message-circle"></i></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>Tenants Ativos</h3>
+                        <p id="active-tenants">0</p>
+                        <span class="trend">Estável</span>
+                    </div>
+                    <div class="stat-icon orange"><i data-lucide="shield-check"></i></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>Arquivos Indexados</h3>
+                        <p id="indexed-docs">12</p>
+                        <span class="trend positive">3 novos hoje</span>
+                    </div>
+                    <div class="stat-icon red"><i data-lucide="file-text"></i></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>Custo Estimativo</h3>
+                        <p>$0.42</p>
+                        <span class="trend negative">+5% vs ontem</span>
+                    </div>
+                    <div class="stat-icon orange"><i data-lucide="credit-card"></i></div>
+                </div>
+            </section>
+
+            <section class="recent-activity">
+                <div class="activity-header">
+                    <h2>Últimas Interações (RAG)</h2>
+                    <button class="btn-primary" onclick="loadData()">Atualizar <i data-lucide="refresh-cw"></i></button>
+                </div>
+                <div class="table-container">
+                    <table id="logs-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Tenant</th>
+                                <th>WhatsApp</th>
+                                <th>Pergunta</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>
