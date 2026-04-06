@@ -54,18 +54,6 @@ npm run dev:all
 - `src/config/tenants.example.json`
 - `v2_data/admin_config.example.json`
 
-Esses arquivos existem para bootstrap. Nao publique credenciais reais em `.env`, `src/config/tenants.json` ou em `v2_data/*.json`.
-
-## Dados locais que nao devem ir para o Git
-
-O `.gitignore` exclui artefatos locais como:
-
-- `.env`
-- `v2_data/`
-- `webhook_logs.txt`
-- `node_modules/`
-- `dist/`
-
 Se algum desses arquivos ja estiver rastreado no Git, remova do indice antes de publicar.
 
 ## Operacao
