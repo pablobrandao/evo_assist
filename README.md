@@ -1,4 +1,4 @@
-# Comercial Assistent
+# Evo Assistent
 
 Assistente comercial com ingestao IMAP, RAG sobre documentos, integracao com WhatsApp via Evolution API e painel administrativo web.
 
