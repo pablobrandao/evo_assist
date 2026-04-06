@@ -54,7 +54,6 @@ npm run dev:all
 - `src/config/tenants.example.json`
 - `v2_data/admin_config.example.json`
 
-Se algum desses arquivos ja estiver rastreado no Git, remova do indice antes de publicar.
 
 ## Operacao
 
