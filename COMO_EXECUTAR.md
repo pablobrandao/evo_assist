@@ -1,4 +1,4 @@
-# Guia de Execucao - Agente RAG WhatsApp (AGC Frutas)
+# Guia de Execucao - Agente RAG WhatsApp (Evo Assist)
 
 > Versao: 1.3 - 30/03/2026
 > Stack: Node.js v22 - Evolution API v2.3.7 - Gemini 2.0 Flash - Embeddings locais (Python) - Qdrant local - PostgreSQL - Redis
