@@ -1,6 +1,7 @@
 import { upsertQdrantPoints } from '../vector-store/qdrant.service';
 import { createHash } from 'crypto';
 import { embedTexts } from '../embeddings/local-embedding.service';
+import { upsertDocumentGraph } from '../rag/graph.service';
 
 const CHUNK_SIZE = 2500;
 const CHUNK_OVERLAP = 250;
@@ -186,5 +187,16 @@ export async function vectorizeAndStore(
     await upsertQdrantPoints(points.slice(i, i + BATCH_SIZE));
   }
 
-  console.log(`[QDRANT] ✅ ${points.length} chunks indexados para ${metadata.tenant_id}`);
+  await upsertDocumentGraph({
+    tenantId: metadata.tenant_id,
+    filename: metadata.filename,
+    text,
+    documentType,
+    keywords,
+    email_subject: metadata.email_subject,
+    email_from: metadata.email_from,
+    email_date: metadata.email_date,
+  });
+
+  console.log(`[QDRANT] Indexados ${points.length} chunks para ${metadata.tenant_id}`);
 }

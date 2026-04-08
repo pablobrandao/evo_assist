@@ -5,9 +5,43 @@ interface LocalEmbeddingResponse {
   embeddings: number[][];
 }
 
-async function runLocalEmbeddingScript(texts: string[]): Promise<LocalEmbeddingResponse> {
+interface PythonCommand {
+  command: string;
+  args: string[];
+}
+
+function buildPythonCommandCandidates(): PythonCommand[] {
+  const configured = env.LOCAL_EMBEDDING_PYTHON_BIN.trim();
+  const candidates: PythonCommand[] = [];
+
+  if (configured) {
+    candidates.push({
+      command: configured,
+      args: ['scripts/embed_local.py'],
+    });
+  }
+
+  // Windows often exposes a blocked store alias for `python`; `py -3` is a safer fallback.
+  if (configured.toLowerCase() === 'python') {
+    candidates.push({
+      command: 'py',
+      args: ['-3', 'scripts/embed_local.py'],
+    });
+    candidates.push({
+      command: 'python3',
+      args: ['scripts/embed_local.py'],
+    });
+  }
+
+  return candidates;
+}
+
+async function runSingleLocalEmbeddingCommand(
+  texts: string[],
+  pythonCommand: PythonCommand
+): Promise<LocalEmbeddingResponse> {
   return await new Promise((resolve, reject) => {
-    const child = spawn(env.LOCAL_EMBEDDING_PYTHON_BIN, ['scripts/embed_local.py'], {
+    const child = spawn(pythonCommand.command, pythonCommand.args, {
       cwd: process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
@@ -33,7 +67,7 @@ async function runLocalEmbeddingScript(texts: string[]): Promise<LocalEmbeddingR
 
     child.on('close', code => {
       if (code !== 0) {
-        reject(new Error(`[EMBEDDINGS] Processo Python falhou (${code}): ${stderr || stdout}`));
+        reject(new Error(`[EMBEDDINGS] Processo Python falhou (${code}) em "${pythonCommand.command} ${pythonCommand.args.join(' ')}": ${stderr || stdout}`));
         return;
       }
 
@@ -50,6 +84,34 @@ async function runLocalEmbeddingScript(texts: string[]): Promise<LocalEmbeddingR
     }));
     child.stdin.end();
   });
+}
+
+async function runLocalEmbeddingScript(texts: string[]): Promise<LocalEmbeddingResponse> {
+  const candidates = buildPythonCommandCandidates();
+  let lastError: unknown;
+
+  for (const candidate of candidates) {
+    try {
+      return await runSingleLocalEmbeddingCommand(texts, candidate);
+    } catch (error) {
+      lastError = error;
+      const errorMessage = String((error as Error)?.message ?? error);
+      const isSpawnPermissionIssue =
+        errorMessage.includes('spawn EPERM') ||
+        errorMessage.includes('ENOENT') ||
+        errorMessage.includes('EACCES');
+
+      if (!isSpawnPermissionIssue) {
+        throw error;
+      }
+
+      console.warn(`[EMBEDDINGS] Falha ao iniciar "${candidate.command}". Tentando fallback...`);
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('[EMBEDDINGS] Nao foi possivel iniciar o processo Python local.');
 }
 
 export async function embedTexts(texts: string[]): Promise<number[][]> {

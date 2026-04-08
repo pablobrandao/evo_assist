@@ -7,6 +7,8 @@ import { answerQuestion } from '../rag/query.service';
 import { extractTextFromDocument, resolveSupportedDocument } from './document.service';
 import { HistoryService } from '../conversation/history.service';
 import { loadAdminConfig } from '../config/admin-config';
+import { IngestionLockService } from './ingestion-lock.service';
+import { ProcessedAttachmentService } from './processed-attachment.service';
 
 type TenantConfig = TenantRuntimeConfig;
 
@@ -20,7 +22,7 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
 }
 
 function getContextMessageTemplate(filename: string): string {
-  let template = '📌 Este contexto refere-se ao arquivo: {{filename}}\nPara consultar este arquivo, responda qualquer pergunta que o assistente irá usar o documento como contexto.';
+  let template = 'Este contexto refere-se ao arquivo: {{filename}}\nPara consultar este arquivo, responda qualquer pergunta que o assistente ira usar o documento como contexto.';
   const config = loadAdminConfig();
   if (config.contextMessageTemplate) {
     template = config.contextMessageTemplate;
@@ -65,7 +67,7 @@ function buildPostIngestionQuestion(filename: string, text: string): string {
   const baseName = filename.replace(/\.[a-z0-9]+$/i, '');
 
   if (normalized.includes('vendas') && normalized.includes('metas') && normalized.includes('projec')) {
-    return `quais as métricas de ${baseName}?`;
+    return `quais as metricas de ${baseName}?`;
   }
 
   if (normalized.includes('boleto')) {
@@ -144,6 +146,12 @@ function matchesFilterFrom(message: FetchMessageObject, filterFrom?: string): bo
 }
 
 async function ingestTenant(tenant: TenantConfig): Promise<void> {
+  const ingestionLock = await IngestionLockService.tryAcquireTenantLock(tenant.tenant_id);
+  if (!ingestionLock) {
+    console.warn(`[IMAP] ${tenant.tenant_id}: ingestao ja esta em execucao. Ignorando nova disparada.`);
+    return;
+  }
+
   const client = new ImapFlow({
     host: tenant.imap.host,
     port: tenant.imap.port,
@@ -196,6 +204,7 @@ async function ingestTenant(tenant: TenantConfig): Promise<void> {
       const emailDate = message.envelope?.date?.toISOString?.() ?? '';
       const emailFrom = resolveEnvelopeFrom(message) || resolveHeaderFrom(message);
       const emailMessageId = message.envelope?.messageId ?? '';
+      const messageKey = ProcessedAttachmentService.buildMessageKey(emailMessageId, uid);
       console.log(`[IMAP] UID ${uid} assunto: ${subject}`);
 
       if (!matchesFilterFrom(message, tenant.filter_from)) {
@@ -223,6 +232,19 @@ async function ingestTenant(tenant: TenantConfig): Promise<void> {
           const dl = await client.download(`${uid}`, part?.part ?? '1', { uid: true });
           const buf = await streamToBuffer(dl.content as NodeJS.ReadableStream);
           console.log(`[IMAP] Download concluido: ${filename} (${buf.length} bytes)`);
+
+          const isAlreadyProcessed = await ProcessedAttachmentService.isAlreadyProcessed({
+            tenantId: tenant.tenant_id,
+            messageKey,
+            filename,
+            attachmentBuffer: buf,
+          });
+
+          if (isAlreadyProcessed) {
+            console.log(`[IMAP] Anexo duplicado detectado e ignorado: ${filename}`);
+            continue;
+          }
+
           const txt = await extractTextFromDocument(buf, supportedDocument);
           console.log(`[IMAP] Texto extraido de ${filename}: ${txt.length} caracteres`);
 
@@ -238,6 +260,13 @@ async function ingestTenant(tenant: TenantConfig): Promise<void> {
             attachment_mimetype: supportedDocument.mimetype,
           });
           console.log(`[IMAP] Documento "${filename}" indexado para tenant ${tenant.tenant_id}.`);
+
+          await ProcessedAttachmentService.markProcessed({
+            tenantId: tenant.tenant_id,
+            messageKey,
+            filename,
+            attachmentBuffer: buf,
+          });
 
           if (tenant.remoteJid) {
             try {
@@ -268,7 +297,7 @@ async function ingestTenant(tenant: TenantConfig): Promise<void> {
                   targetFilename: filename,
                 });
               } catch (err) {
-                console.warn(`[IMAP] Falha ao gerar resposta RAG pós-ingestão para "${filename}". Usando resumo estruturado.`, err);
+                console.warn(`[IMAP] Falha ao gerar resposta RAG pos-ingestao para "${filename}". Usando resumo estruturado.`, err);
               }
 
               const contextFooter = getContextMessageTemplate(filename);
@@ -279,18 +308,18 @@ async function ingestTenant(tenant: TenantConfig): Promise<void> {
                 tenant.remoteJid,
                 finalMessage
               );
-              console.log(`[IMAP] Resposta pós-ingestão do documento "${filename}" enviada para ${tenant.remoteJid}.`);
+              console.log(`[IMAP] Resposta pos-ingestao do documento "${filename}" enviada para ${tenant.remoteJid}.`);
               await HistoryService.logInteraction({
                 tenant_id: tenant.tenant_id,
                 from: tenant.remoteJid,
-                question: `[CRON] Resposta automática pós-ingestão: ${filename}`,
+                question: `[CRON] Resposta automatica pos-ingestao: ${filename}`,
                 answer: finalMessage,
                 source: 'cron',
                 eventType: 'post_ingestion_summary',
                 documentName: filename,
               });
             } catch (err) {
-              console.error(`[IMAP] Erro ao encaminhar documento ou resposta pós-ingestão "${filename}" para ${tenant.remoteJid}:`, err);
+              console.error(`[IMAP] Erro ao encaminhar documento ou resposta pos-ingestao "${filename}" para ${tenant.remoteJid}:`, err);
             }
           }
 
@@ -316,8 +345,17 @@ async function ingestTenant(tenant: TenantConfig): Promise<void> {
       }
 
       if (hasSupportedAttachments && !hasProcessingFailure) {
-        await client.messageFlagsAdd(`${uid}`, ['\\Seen'], { uid: true });
-        console.log(`[IMAP] UID ${uid} marcado como lido.`);
+        try {
+          await client.messageFlagsAdd(`${uid}`, ['\\Seen'], { uid: true });
+          console.log(`[IMAP] UID ${uid} marcado como lido.`);
+        } catch (err) {
+          const error = err as { code?: string };
+          if (error?.code === 'NoConnection') {
+            console.warn(`[IMAP] Conexao encerrada antes de marcar UID ${uid} como lido. Seguindo sem falha critica.`);
+          } else {
+            throw err;
+          }
+        }
       }
     }
   } finally {
@@ -330,6 +368,8 @@ async function ingestTenant(tenant: TenantConfig): Promise<void> {
         throw err;
       }
       console.warn('[IMAP] Conexao ja encerrada antes do logout; seguindo sem erro.');
+    } finally {
+      await ingestionLock.release();
     }
   }
 }
@@ -347,7 +387,7 @@ export async function runIngestionForAllTenants(): Promise<void> {
         tenant_id: tenant.tenant_id,
         lastCheckAt: new Date().toISOString(),
         lastStatus: 'error',
-        lastMessage: 'Falha ao executar a ingestão deste representante.',
+        lastMessage: 'Falha ao executar a ingestao deste representante.',
       });
     }
   }

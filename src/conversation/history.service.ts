@@ -90,7 +90,13 @@ export class HistoryService {
     limit = 6
   ): Promise<HistoryEntry[]> {
     const res = await pool.query(
-      'SELECT * FROM conversation_history WHERE tenant_id = $1 AND "from" = $2 ORDER BY timestamp DESC LIMIT $3',
+      `SELECT *
+       FROM conversation_history
+       WHERE tenant_id = $1
+         AND "from" = $2
+         AND COALESCE(source, 'user') <> 'cron'
+       ORDER BY timestamp DESC
+       LIMIT $3`,
       [tenant_id, from, limit]
     );
     // Reverse again because conversation context expects chronological order

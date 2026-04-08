@@ -5,9 +5,9 @@ import { pool } from './client';
 const DATA_DIR = path.join(process.cwd(), 'v2_data');
 
 export async function initDB() {
-  console.log('[DB] Iniciando verificação/criação das tabelas no PostgreSQL...');
+  console.log('[DB] Iniciando verificacao/criacao das tabelas no PostgreSQL...');
   const client = await pool.connect();
-  
+
   try {
     // 1. Representatives Table
     await client.query(`
@@ -53,11 +53,98 @@ export async function initDB() {
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS conversation_history_tenant_from_idx 
+      CREATE INDEX IF NOT EXISTS conversation_history_tenant_from_idx
       ON conversation_history(tenant_id, "from");
     `);
 
-    console.log('[DB] Tabelas verificadas. Verificando necessidade de migração JSON...');
+    // 4. Lightweight graph tables for hybrid RAG
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rag_graph_entities (
+        id BIGSERIAL PRIMARY KEY,
+        tenant_id VARCHAR(255) NOT NULL,
+        entity_type VARCHAR(100) NOT NULL,
+        name TEXT NOT NULL,
+        canonical_name TEXT NOT NULL,
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (tenant_id, entity_type, canonical_name)
+      );
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS rag_graph_entities_tenant_canonical_idx
+      ON rag_graph_entities(tenant_id, canonical_name);
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS rag_graph_entities_tenant_type_idx
+      ON rag_graph_entities(tenant_id, entity_type);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rag_graph_relations (
+        id BIGSERIAL PRIMARY KEY,
+        tenant_id VARCHAR(255) NOT NULL,
+        from_entity_id BIGINT NOT NULL REFERENCES rag_graph_entities(id) ON DELETE CASCADE,
+        to_entity_id BIGINT NOT NULL REFERENCES rag_graph_entities(id) ON DELETE CASCADE,
+        relation_type VARCHAR(100) NOT NULL,
+        source_document VARCHAR(255),
+        confidence NUMERIC(5,4) NOT NULL DEFAULT 0.7500,
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (tenant_id, from_entity_id, to_entity_id, relation_type, source_document)
+      );
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS rag_graph_relations_tenant_from_idx
+      ON rag_graph_relations(tenant_id, from_entity_id);
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS rag_graph_relations_tenant_to_idx
+      ON rag_graph_relations(tenant_id, to_entity_id);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rag_graph_document_entities (
+        id BIGSERIAL PRIMARY KEY,
+        tenant_id VARCHAR(255) NOT NULL,
+        document_name VARCHAR(255) NOT NULL,
+        entity_id BIGINT NOT NULL REFERENCES rag_graph_entities(id) ON DELETE CASCADE,
+        relation_type VARCHAR(100) NOT NULL DEFAULT 'document_mentions_entity',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (tenant_id, document_name, entity_id, relation_type)
+      );
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS rag_graph_document_entities_tenant_document_idx
+      ON rag_graph_document_entities(tenant_id, document_name);
+    `);
+
+    // 5. Processed attachments for ingestion dedupe
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS processed_ingestion_attachments (
+        id BIGSERIAL PRIMARY KEY,
+        tenant_id VARCHAR(255) NOT NULL,
+        message_key VARCHAR(255) NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        attachment_hash VARCHAR(64) NOT NULL,
+        processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (tenant_id, message_key, filename),
+        UNIQUE (tenant_id, attachment_hash)
+      );
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS processed_ingestion_attachments_tenant_message_idx
+      ON processed_ingestion_attachments(tenant_id, message_key);
+    `);
+
+    console.log('[DB] Tabelas verificadas. Verificando necessidade de migracao JSON...');
 
     // Migration logic
     const repCheck = await client.query('SELECT COUNT(*) as count FROM representatives');
@@ -74,7 +161,7 @@ export async function initDB() {
           );
         }
       } catch (e) {
-         // ignore
+        // ignore
       }
     }
 
@@ -106,7 +193,7 @@ export async function initDB() {
           await client.query(
             `INSERT INTO conversation_history (id, timestamp, tenant_id, "from", question, answer, source, event_type, document_name, tokens, tokens_embedding)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT DO NOTHING`,
-             [h.id, h.timestamp, h.tenant_id, h.from, h.question, h.answer, h.source, h.eventType, h.documentName, h.tokens, h.tokens_embedding]
+            [h.id, h.timestamp, h.tenant_id, h.from, h.question, h.answer, h.source, h.eventType, h.documentName, h.tokens, h.tokens_embedding]
           );
         }
       } catch (e) {
@@ -114,7 +201,7 @@ export async function initDB() {
       }
     }
 
-    console.log('[DB] Processo de migração concluído com sucesso.');
+    console.log('[DB] Processo de migracao concluido com sucesso.');
   } catch (error) {
     console.error('[DB] Erro ao criar tabelas e migrar:', error);
     throw error;

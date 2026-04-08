@@ -5,9 +5,13 @@ import { buildRAGPrompt } from './prompt';
 import { HistoryEntry, HistoryService } from '../conversation/history.service';
 import { searchQdrantPoints } from '../vector-store/qdrant.service';
 import { embedText } from '../embeddings/local-embedding.service';
+import { getGraphContext } from './graph.service';
 
 import * as fs from 'fs';
 import * as path from 'path';
+
+const FOLLOW_UP_ANALYSIS_COOLDOWN_MS = 5 * 60 * 1000;
+let analyzeIntentCooldownUntil = 0;
 
 function getSystemPromptForFile(tenantId: string, filename?: string): string {
   if (filename) {
@@ -21,7 +25,7 @@ function getSystemPromptForFile(tenantId: string, filename?: string): string {
       } catch (e) {}
     }
   }
-  
+
   const config = loadAdminConfig();
   if (config.defaultSystemPrompt) {
     return config.defaultSystemPrompt;
@@ -32,7 +36,7 @@ function getSystemPromptForFile(tenantId: string, filename?: string): string {
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
 
 const NO_CONTEXT_REPLY =
-  'Não encontrei essa informação nos documentos disponíveis. Por favor, consulte o seu supervisor.';
+  'Nao encontrei essa informacao nos documentos disponiveis. Por favor, consulte o seu supervisor.';
 
 function normalizeText(value: string): string {
   return value
@@ -41,28 +45,117 @@ function normalizeText(value: string): string {
     .toLowerCase();
 }
 
-function buildRetrievalVariants(question: string, conversationHistory: string): string[] {
+function extractFilenames(text: string): string[] {
+  const matches = text.match(/[A-Z0-9_./-]+\.(?:pdf|docx|xlsx|csv|txt)/gi) ?? [];
+  return Array.from(new Set(matches.map(item => item.trim())));
+}
+
+function isGreeting(question: string): boolean {
+  const normalized = normalizeText(question).trim();
+  return /^(oi|ola|bom dia|boa tarde|boa noite|e ai|opa)\b/.test(normalized);
+}
+
+function shouldAnalyzeContext(question: string, history: HistoryEntry[]): boolean {
+  if (history.length === 0) {
+    return false;
+  }
+
+  const normalized = normalizeText(question);
+  const filenameMentioned = extractFilenames(question).length > 0;
+  if (filenameMentioned) {
+    return false;
+  }
+
+  if (normalized.length <= 3) {
+    return false;
+  }
+
+  const followUpSignals = [
+    'dele',
+    'deles',
+    'delas',
+    'disso',
+    'nisso',
+    'naquele',
+    'naquela',
+    'nessa',
+    'nesse',
+    'nesse arquivo',
+    'neste arquivo',
+    'esse arquivo',
+    'essa pergunta',
+    'esses dados',
+    'esses clientes',
+    'esses documentos',
+    'entao',
+    'qual deles',
+    'quais sao eles',
+    'quais sao elas',
+    'os dados estao em',
+    'de forma distinta',
+    'entre os',
+  ];
+
+  return followUpSignals.some(signal => normalized.includes(signal));
+}
+
+function tryResolveTargetFilenameHeuristically(question: string, history: HistoryEntry[]): string | null {
+  const explicitInQuestion = extractFilenames(question);
+  if (explicitInQuestion.length > 0) {
+    return explicitInQuestion[0];
+  }
+
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const entry = history[i];
+
+    if (entry.documentName?.trim()) {
+      return entry.documentName.trim();
+    }
+
+    const answerMatches = extractFilenames(entry.answer ?? '');
+    if (answerMatches.length > 0) {
+      return answerMatches[0];
+    }
+
+    const questionMatches = extractFilenames(entry.question ?? '');
+    if (questionMatches.length > 0) {
+      return questionMatches[0];
+    }
+  }
+
+  return null;
+}
+
+function buildRetrievalVariants(
+  question: string,
+  conversationHistory: string,
+  graphHints: string[] = []
+): string[] {
   const normalizedQuestion = normalizeText(question);
   const variants = new Set<string>();
 
   variants.add(question);
 
-  if (conversationHistory !== 'Sem histórico recente.') {
+  if (conversationHistory !== 'Sem historico recente.') {
     variants.add(`${conversationHistory}\n\nPergunta atual: ${question}`);
   }
 
+  if (graphHints.length > 0) {
+    variants.add(`${question}\nEntidades e relacoes relevantes: ${graphHints.join(', ')}`);
+  }
+
   if (normalizedQuestion.includes('mes atual')) {
-    variants.add(`${question}\nFoque em total faturado, total geral, período atual e vendas do mês atual.`);
-    variants.add('Vendas Mês Atual, Vendas Dia Hoje, Meta Mês, Meta Realizada, Projeção do Mês, Ticket Médio.');
+    variants.add(`${question}\nFoque em total faturado, total geral, periodo atual e vendas do mes atual.`);
+    variants.add('Vendas Mes Atual, Vendas Dia Hoje, Meta Mes, Meta Realizada, Projecao do Mes, Ticket Medio.');
   }
 
   if (normalizedQuestion.includes('metrica') || normalizedQuestion.includes('indicador')) {
-    variants.add(`${question}\nFoque em cabeçalhos, colunas, métricas, totais e seções do relatório.`);
+    variants.add(`${question}\nFoque em cabecalhos, colunas, metricas, totais e secoes do relatorio.`);
   }
 
   if (normalizedQuestion.includes('meta')) {
-    variants.add(`${question}\nFoque em metas, projeções, vendas e resumo executivo do documento.`);
-    variants.add('Meta Mês (R$), Meta Realizada, Projeção do Mês, Meta Dia, Peso Mês Atual, Meta Mês (KG).');
+    variants.add(`${question}\nFoque em metas, projecoes, vendas e resumo executivo do documento.`);
+    variants.add('Meta Mes (R$), Meta Realizada, Projecao do Mes, Meta Dia, Peso Mes Atual, Meta Mes (KG).');
   }
 
   if (normalizedQuestion.includes('recebeu hoje') || normalizedQuestion.includes('dados recebeu hoje')) {
@@ -70,7 +163,7 @@ function buildRetrievalVariants(question: string, conversationHistory: string): 
   }
 
   if (normalizedQuestion.includes('faturado')) {
-    variants.add(`${question}\nFoque em total faturado, total geral, valor total e vendas do período.`);
+    variants.add(`${question}\nFoque em total faturado, total geral, valor total e vendas do periodo.`);
   }
 
   return Array.from(variants);
@@ -119,7 +212,7 @@ async function callOpenRouter(systemInstruction: string, userMessage: string): P
       model: 'openrouter/auto:free',
       messages: [
         { role: 'system', content: systemInstruction },
-        { role: 'user', content: userMessage }
+        { role: 'user', content: userMessage },
       ],
       temperature: 0.2,
     }),
@@ -140,44 +233,61 @@ async function analyzeQueryIntent(question: string, history: HistoryEntry[]): Pr
 }> {
   if (history.length === 0) return { query: question, targetFilename: null };
 
+  if (Date.now() < analyzeIntentCooldownUntil) {
+    const heuristicTarget = tryResolveTargetFilenameHeuristically(question, history);
+    return { query: question, targetFilename: heuristicTarget };
+  }
+
   const schema: Schema = {
     type: SchemaType.OBJECT,
     properties: {
-      query: { type: SchemaType.STRING, description: "A pergunta reescrita/isolada mantendo os detalhes intactos para busca vetorial." },
-      targetFilename: { type: SchemaType.STRING, description: "O nome completo do arquivo referenciado EXATAMENTE como no histórico (ex: VENDAS_P/_VENDEDOR.pdf), caso exista menção isoladora na pergunta. Se for busca global, retorne ''.", nullable: true }
+      query: { type: SchemaType.STRING, description: 'A pergunta reescrita/isolada mantendo os detalhes intactos para busca vetorial.' },
+      targetFilename: { type: SchemaType.STRING, description: "O nome completo do arquivo referenciado EXATAMENTE como no historico (ex: VENDAS_P/_VENDEDOR.pdf), caso exista mencao isoladora na pergunta. Se for busca global, retorne ''.", nullable: true },
     },
-    required: ["query"]
+    required: ['query'],
   };
 
-  const contextStr = history.slice(-4).map((h, i) => `Histórico ${i + 1}:\nUsuario: ${h.question}\nAssistente: ${h.answer}`).join('\n---\n');
+  const contextStr = history
+    .slice(-4)
+    .map((h, i) => `Historico ${i + 1}:\nUsuario: ${h.question}\nAssistente: ${h.answer}`)
+    .join('\n---\n');
 
   try {
     const generativeModel = genAI.getGenerativeModel({
       model: 'gemini-2.0-flash',
       generationConfig: {
-        responseMimeType: "application/json",
+        responseMimeType: 'application/json',
         responseSchema: schema,
         temperature: 0,
-      }
+      },
     });
 
-    const prompt = `Analise a pergunta do Usuário atual cruzando com o Histórico Recente. Se o usuário restringir a intenção a uma listagem/arquivo específico mencionado no assistente antes (exemplo: referenciando o 'relatório 8'), encontre o NOME DO ARQUIVO COMPLETO correspondente neste histórico e retorne-o.\n\nHISTÓRICO:\n${contextStr}\n\nPERGUNTA: ${question}\n\nRetorne as variáveis usando o schema requerido.`;
+    const prompt = `Analise a pergunta do Usuario atual cruzando com o Historico Recente. Se o usuario restringir a intencao a uma listagem/arquivo especifico mencionado no assistente antes (exemplo: referenciando o 'relatorio 8'), encontre o NOME DO ARQUIVO COMPLETO correspondente neste historico e retorne-o.\n\nHISTORICO:\n${contextStr}\n\nPERGUNTA: ${question}\n\nRetorne as variaveis usando o schema requerido.`;
     const res = await withGeminiCatch(() => generativeModel.generateContent(prompt));
     const jsonStr = res.response.text();
     const json = JSON.parse(jsonStr);
-    
-    let extractedFilename = (json.targetFilename && json.targetFilename.trim() !== '') ? json.targetFilename : null;
+
+    let extractedFilename = json.targetFilename && json.targetFilename.trim() !== '' ? json.targetFilename : null;
     if (extractedFilename) {
       extractedFilename = extractedFilename.replace(/\*/g, '').trim();
     }
-    
+
     return {
       query: json.query || question,
-      targetFilename: extractedFilename
+      targetFilename: extractedFilename ?? tryResolveTargetFilenameHeuristically(question, history),
     };
   } catch (e) {
-    console.error('[RAG] Erro no analyzeQueryIntent:', e);
-    return { query: question, targetFilename: null };
+    if ((e as Error)?.message === 'RATE_LIMIT') {
+      analyzeIntentCooldownUntil = Date.now() + FOLLOW_UP_ANALYSIS_COOLDOWN_MS;
+      console.warn('[RAG] analyzeQueryIntent entrou em cooldown temporario por rate limit. Usando heuristica local.');
+    } else {
+      console.error('[RAG] Erro no analyzeQueryIntent:', e);
+    }
+
+    return {
+      query: question,
+      targetFilename: tryResolveTargetFilenameHeuristically(question, history),
+    };
   }
 }
 
@@ -194,22 +304,42 @@ export async function answerQuestion(
     ? recentConversation
       .map(entry => `Usuario: ${entry.question}\nAssistente: ${entry.answer}`)
       .join('\n\n')
-    : 'Sem histórico recente.';
+    : 'Sem historico recente.';
+
+  if (isGreeting(question) && recentConversation.length === 0) {
+    return 'Boa tarde! Como posso ajudar com os documentos ou relatorios?';
+  }
 
   let effectiveQuestion = question;
-  let effectiveTargetFilename = options?.targetFilename;
+  let effectiveTargetFilename: string | undefined =
+    options?.targetFilename ?? tryResolveTargetFilenameHeuristically(question, recentConversation) ?? undefined;
 
-  if (!effectiveTargetFilename && recentConversation.length > 0) {
+  if (!effectiveTargetFilename && shouldAnalyzeContext(question, recentConversation)) {
     const analysis = await analyzeQueryIntent(question, recentConversation);
     effectiveQuestion = analysis.query;
     if (analysis.targetFilename) {
-      effectiveTargetFilename = analysis.targetFilename;
-      console.log(`[RAG] Inteligência detectou foco em arquivo: ${effectiveTargetFilename}`);
+      effectiveTargetFilename = analysis.targetFilename ?? undefined;
+      console.log(`[RAG] Inteligencia detectou foco em arquivo: ${effectiveTargetFilename}`);
     }
   }
 
   try {
-    const retrievalVariants = buildRetrievalVariants(effectiveQuestion, conversationHistory);
+    const graphContext = await getGraphContext({
+      tenantId: tenant_id,
+      question: effectiveQuestion,
+      targetFilename: effectiveTargetFilename,
+      limit: 10,
+    });
+
+    if (graphContext.facts.length > 0) {
+      console.log(`[RAG] Contexto de grafo encontrado com ${graphContext.facts.length} relacoes relevantes.`);
+    }
+
+    const retrievalVariants = buildRetrievalVariants(
+      effectiveQuestion,
+      conversationHistory,
+      graphContext.retrievalHints
+    );
     const resultsMap = new Map<string, { payload?: any; score: number }>();
 
     for (const variant of retrievalVariants) {
@@ -218,7 +348,7 @@ export async function answerQuestion(
         vector: questionEmbedding,
         tenant_id,
         limit: 6,
-        filename: effectiveTargetFilename || undefined
+        filename: effectiveTargetFilename || undefined,
       });
 
       for (const match of results) {
@@ -245,24 +375,43 @@ export async function answerQuestion(
     const customSystemPrompt = getSystemPromptForFile(tenant_id, topFilename);
 
     console.log(`[RAG] topFilename identificado para fallback de prompt: ${topFilename}`);
-    console.log(`[RAG] customSystemPrompt selecionado: ${customSystemPrompt ? 'SIM (Personalizado)' : 'NÃO (Padrão)'}`);
-    console.log(`[RAG] Conteúdo System Instruction: ${customSystemPrompt}`);
+    console.log(`[RAG] customSystemPrompt selecionado: ${customSystemPrompt ? 'SIM (Personalizado)' : 'NAO (Padrao)'}`);
 
     const recentDocs = await HistoryService.getRecentIngestedDocuments(tenant_id, 10);
     const sqlAuditContext = recentDocs.length > 0
-      ? `[AUDITORIA DO BANCO DE DADOS] Os arquivos mais recentes registrados oficialmente no sistema são:\n` + recentDocs.map(d => `- ${d.name} (Registrado/Indexado em ${d.date})`).join('\n')
+      ? `[AUDITORIA DO BANCO DE DADOS] Os arquivos mais recentes registrados oficialmente no sistema sao:\n${recentDocs.map(d => `- ${d.name} (Registrado/Indexado em ${d.date})`).join('\n')}`
       : '';
 
-    const context = results
+    const graphFactsContext = graphContext.facts.length > 0
+      ? `[CONTEXTO RELACIONAL DO GRAFO]\n${graphContext.facts.map(fact => `- ${fact}`).join('\n')}`
+      : '';
+
+    const graphEntityContext = graphContext.matchedEntities.length > 0
+      ? `[ENTIDADES RELACIONAIS IDENTIFICADAS]\n${graphContext.matchedEntities.map(entity => `- ${entity.name} (${entity.entityType})`).join('\n')}`
+      : '';
+
+    const retrievedContext = results
       .map((match, i) => {
         const text = match.payload?.text ?? '';
         const filename = match.payload?.filename ?? 'documento';
         const documentType = match.payload?.document_type ? ` (${match.payload.document_type})` : '';
         return `[Trecho ${i + 1} - ${filename}${documentType}]:\n${text}`;
       })
-      .join('\n\n---\n\n') + (sqlAuditContext ? `\n\n---\n\n${sqlAuditContext}` : '');
+      .join('\n\n---\n\n');
 
-    const promptData = buildRAGPrompt(context, effectiveQuestion, conversationHistory, customSystemPrompt);
+    const contextSections = [
+      graphFactsContext,
+      graphEntityContext,
+      retrievedContext,
+      sqlAuditContext,
+    ].filter(Boolean);
+
+    const promptData = buildRAGPrompt(
+      contextSections.join('\n\n---\n\n'),
+      effectiveQuestion,
+      conversationHistory,
+      customSystemPrompt
+    );
 
     if (env.OPENROUTER_API_KEY) {
       try {
@@ -272,17 +421,17 @@ export async function answerQuestion(
       }
     }
 
-    const generativeModel = genAI.getGenerativeModel({ 
+    const generativeModel = genAI.getGenerativeModel({
       model: 'gemini-2.0-flash',
-      systemInstruction: promptData.systemInstruction
+      systemInstruction: promptData.systemInstruction,
     });
-    
+
     const response = await withGeminiCatch(() => generativeModel.generateContent(promptData.userMessage));
 
     return response.response.text();
   } catch (error: any) {
     if (error.message === 'RATE_LIMIT') {
-      return '🚦 *Aviso:* Essa informação não está indexada na minha base, consulte seu Supervisor!';
+      return '*Aviso:* Essa informacao nao esta indexada na minha base, consulte seu Supervisor!';
     }
     throw error;
   }
